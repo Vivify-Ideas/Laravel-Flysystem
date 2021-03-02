@@ -13,12 +13,16 @@ declare(strict_types=1);
 
 namespace GrahamCampbell\Flysystem\Adapters;
 
+use GuzzleHttp\Client;
+use GuzzleHttp\HandlerStack;
 use GrahamCampbell\Manager\ConnectorInterface;
 use Illuminate\Support\Arr;
 use InvalidArgumentException;
 use League\Flysystem\Rackspace\RackspaceAdapter;
-use OpenCloud\ObjectStore\Resource\Container;
-use OpenCloud\Rackspace as OpenStackRackspace;
+use OpenStack\Common\Transport\Utils as TransportUtils;
+use OpenStack\Identity\v2\Service;
+use OpenStack\ObjectStore\v1\Models\Container;
+use OpenStack\OpenStack;
 
 /**
  * This is the rackspace connector class.
@@ -55,8 +59,12 @@ class RackspaceConnector implements ConnectorInterface
      */
     protected function getAuth(array $config)
     {
-        if (!array_key_exists('username', $config) || !array_key_exists('apiKey', $config)) {
+        if (!array_key_exists('username', $config) || !array_key_exists('password', $config)) {
             throw new InvalidArgumentException('The rackspace connector requires authentication.');
+        }
+        
+        if (!array_key_exists('tenantId', $config)) {
+            throw new InvalidArgumentException('The rackspace connector requires tenant ID.');
         }
 
         if (!array_key_exists('endpoint', $config)) {
@@ -71,7 +79,7 @@ class RackspaceConnector implements ConnectorInterface
             throw new InvalidArgumentException('The rackspace connector requires container configuration.');
         }
 
-        return Arr::only($config, ['username', 'apiKey', 'endpoint', 'region', 'container', 'internal']);
+        return Arr::only($config, ['username', 'password', 'tenantId', 'endpoint', 'region', 'container']);
     }
 
     /**
@@ -79,24 +87,35 @@ class RackspaceConnector implements ConnectorInterface
      *
      * @param string[] $auth
      *
-     * @return \OpenCloud\ObjectStore\Resource\Container
+     * @return \OpenStack\ObjectStore\v1\Models\Container
      */
     protected function getClient(array $auth)
     {
-        $client = new OpenStackRackspace($auth['endpoint'], [
-            'username' => $auth['username'],
-            'apiKey'   => $auth['apiKey'],
+        $httpClient = new Client([
+            'base_uri' => TransportUtils::normalizeUrl($auth['endpoint']),
+            'handler'  => HandlerStack::create(),
         ]);
 
-        $urlType = Arr::get($auth, 'internal', false) ? 'internalURL' : 'publicURL';
+        $options = [
+            'authUrl'         => $auth['endpoint'],
+            'region'          => $auth['region'],
+            'username'        => $auth['username'],
+            'password'        => $auth['password'],
+            'tenantId'        => $auth['tenantId'],
+            'identityService' => Service::factory($httpClient),
+        ];
 
-        return $client->objectStoreService('cloudFiles', $auth['region'], $urlType)->getContainer($auth['container']);
+        $client = new OpenStack($options);
+
+        $objectStoreOptions = ['catalogName' => 'cloudFiles'];
+
+        return $client->objectStoreV1($objectStoreOptions)->getContainer($auth['container']);
     }
 
     /**
      * Get the rackspace adapter.
      *
-     * @param \OpenCloud\ObjectStore\Resource\Container $client
+     * @param \OpenStack\ObjectStore\v1\Models\Container $client
      *
      * @return \League\Flysystem\Rackspace\RackspaceAdapter
      */
